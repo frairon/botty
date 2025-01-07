@@ -11,12 +11,42 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-func RunTemplate(tpl string, values ...*KV) (string, error) {
+type KeyValue interface {
+	Key() string
+	Value() any
+}
+
+type KeyValues []KeyValue
+
+type keyValues struct {
+	values map[string]any
+}
+
+func (kv *keyValues) Items() map[string]any {
+	return kv.values
+}
+
+func TplValues(values ...KeyValue) KeyValues {
+	return values
+
+	// kv := &keyValues{
+	// 	values: make(map[string]any, len(values)),
+	// }
+	// for _, value := range values {
+	// 	kv.values[value.Key()] = value.Value()
+	// }
+	// return kv
+}
+func RunTemplate(tpl string, values ...KeyValue) (string, error) {
 	valueMap := make(map[string]interface{}, len(values))
 
 	for _, value := range values {
-		valueMap[value.Key] = value.Value
+		valueMap[value.Key()] = value.Value()
 	}
+	return RunTemplateMap(tpl, valueMap)
+}
+
+func RunTemplateMap(tpl string, valueMap map[string]any) (string, error) {
 
 	content := template.Must(template.New("").Funcs(templateFuncs).Parse(tpl))
 
@@ -36,15 +66,22 @@ var templateFuncs = template.FuncMap{
 	"divider":              func() string { return "========" },
 }
 
-type KV struct {
-	Key   string
-	Value interface{}
+type kv struct {
+	key   string
+	value interface{}
 }
 
-func kv(key string, value interface{}) *KV {
-	return &KV{
-		Key:   key,
-		Value: value,
+func (k *kv) Key() string {
+	return k.key
+}
+func (k *kv) Value() any {
+	return k.value
+}
+
+func KV(key string, value interface{}) KeyValue {
+	return &kv{
+		key:   key,
+		value: value,
 	}
 }
 

@@ -3,6 +3,8 @@ package botty
 import (
 	"fmt"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type User struct {
@@ -10,11 +12,11 @@ type User struct {
 	Name string
 }
 
-type StoredSession[T any] struct {
-	UserID         int64
-	ChatID         int64
-	LastAction     time.Time
-	SessionContext T
+type StoredSessionState[T any] struct {
+	UserID     UserId
+	ChatID     ChatId
+	LastAction time.Time
+	State      T
 }
 
 type UserManager interface {
@@ -24,50 +26,52 @@ type UserManager interface {
 	DeleteUser(int64) error
 }
 
-type SessionContextManager[T any] interface {
-	CreateSessionContext(userId, chatId int64) T
-	StoreSession(session StoredSession[T]) error
+type AppStateManager[T any] interface {
+	CreateAppState(userId UserId, chatId ChatId) T
+	StoreSessionState(state StoredSessionState[T]) error
 
 	// rename to list sessions
-	LoadSessions() ([]StoredSession[T], error)
+	LoadSessionStates() ([]StoredSessionState[T], error)
 }
 
 type Config[T any] struct {
 	// bot token
 	Token string
 
-	SessionContextManager SessionContextManager[T]
+	AppStateManager AppStateManager[T]
 
 	RootState StateFactory[T]
 
 	UserManager UserManager
+
+	Connect func(token string) (TGApi, error)
 }
 
-func (c *Config[T]) valid() (*Config[T], error) {
-	validatedCfg := &Config[T]{
-		Token:                 "",
-		SessionContextManager: c.SessionContextManager,
-		UserManager:           c.UserManager,
-		RootState: func() State[T] {
-			return &functionState[T]{
-				activate: func(bs Session[T]) {
-					bs.SendMessage("hello world")
-				},
+func NewConfig[T any](token string, appStateManager AppStateManager[T], userManager UserManager, rootState StateFactory[T]) *Config[T] {
+
+	return &Config[T]{
+		Token:           token,
+		AppStateManager: appStateManager,
+		UserManager:     userManager,
+		RootState:       rootState,
+		Connect: func(token string) (TGApi, error) {
+			api, err := tgbotapi.NewBotAPI(token)
+			if err != nil {
+				return nil, fmt.Errorf("error connecting to bot api: %w", err)
 			}
+			return api, err
 		},
 	}
+}
 
-	if c.SessionContextManager == nil {
-		return nil, fmt.Errorf("session context manager must be provided")
+func (c *Config[T]) validate() error {
+
+	if c.AppStateManager == nil {
+		return fmt.Errorf("session context manager must be provided")
 	}
 	if c.UserManager == nil {
-		return nil, fmt.Errorf("user manager must be provided")
+		return fmt.Errorf("user manager must be provided")
 	}
 
-	if c.Token != "" {
-		validatedCfg.Token = c.Token
-	}
-
-	return validatedCfg, nil
-
+	return nil
 }

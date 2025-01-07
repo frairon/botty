@@ -28,7 +28,7 @@ func UsersList[T any](uStorage UserManager) State[T] {
 				return
 			}
 
-			content, err := RunTemplate(`All Users
+			template := `All Users
 {{divider}}
 {{- if .users -}}
 {{- range $idx, $user:= .users }}
@@ -36,15 +36,11 @@ func UsersList[T any](uStorage UserManager) State[T] {
 {{- end -}}
 {{- else }}
 - no users registered -
-{{- end -}}`, kv("users", users))
+{{- end -}}`
 
-			if err != nil {
-				bs.Fail("Cannot list users", "error reading users: %v", err)
-				return
-			}
-
-			bs.SendMessageWithCommands(content, NewButtonKeyboard(newRow(Back),
-				newRow(Add, Delete)))
+			bs.SendTemplateMessage(template, TplValues(KV("users", users)),
+				SendMessageWithKeyboard(NewButtonKeyboard(newRow(Back),
+					newRow(Add, Delete))))
 		},
 		handleMessage: func(bs Session[T], message *tgbotapi.Message) {
 			botName, err := bs.BotName()
@@ -57,14 +53,9 @@ func UsersList[T any](uStorage UserManager) State[T] {
 			case Back:
 				bs.PopState()
 			case Add:
-				text, err := RunTemplate(`The bot is now set to ACCEPT-mode, allowing new users to join.
+				bs.SendTemplateMessage(`The bot is now set to ACCEPT-mode, allowing new users to join.
 This will be disabled automatically after 10 minutes.
-Tell you friend to contact bot @{{.botName}} now.`, kv("botName", botName))
-				if err != nil {
-					bs.Fail("error rendering template", "error rendering template: %v", err)
-					return
-				}
-				bs.SendMessageWithCommands(text, nil)
+Tell you friend to contact bot @{{.botName}} now.`, TplValues(KV("botName", botName)))
 				bs.AcceptUsers(10 * time.Minute)
 			case Delete:
 				bs.PushState(SelectToDeleteUser[T](uStorage, users))
@@ -77,7 +68,7 @@ func SelectToDeleteUser[T any](uStorage UserManager, users []User) State[T] {
 	var Back Button = "Back"
 	return &functionState[T]{
 		activate: func(bs Session[T]) {
-			bs.SendMessageWithCommands("Select user to delete", NewButtonKeyboard(newRow(Back)))
+			bs.SendMessage("Select user to delete", SendMessageWithKeyboard(NewButtonKeyboard(newRow(Back))))
 		},
 		handleMessage: func(bs Session[T], msg *tgbotapi.Message) {
 			selector := strings.TrimSpace(msg.Text)

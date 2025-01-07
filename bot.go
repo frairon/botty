@@ -10,28 +10,43 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+type (
+	UserId    int64
+	ChatId    int64
+	MessageId int64
+)
+
+type TGApi interface {
+	Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
+	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+	GetMe() (tgbotapi.User, error)
+	GetUpdatesChan(config tgbotapi.UpdateConfig) tgbotapi.UpdatesChannel
+	StopReceivingUpdates()
+}
+
 type Bot[T any] struct {
-	botApi *tgbotapi.BotAPI
+	botApi TGApi
 
 	config *Config[T]
 
 	acceptNewUser bool
 
-	mSessions             sync.Mutex
-	sessions              map[int64]*botSession[T]
-	sessionContextFactory func(userId, chatId int64) T
+	mSessions sync.Mutex
+	sessions  map[ChatId]*session[T]
 
 	startTime time.Time
 
 	// will be closed when bot is shutting down
 	shutdown chan struct{}
-
-	rootState StateFactory[T]
 }
 
 func New[T any](config *Config[T]) (*Bot[T], error) {
 
-	botApi, err := tgbotapi.NewBotAPI(config.Token)
+	if err := config.validate(); err != nil {
+		return nil, err
+	}
+
+	botApi, err := config.Connect(config.Token)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to bot api: %w", err)
 	}
@@ -39,38 +54,24 @@ func New[T any](config *Config[T]) (*Bot[T], error) {
 	return &Bot[T]{
 		config:   config,
 		botApi:   botApi,
-		sessions: make(map[int64]*botSession[T]),
+		sessions: make(map[ChatId]*session[T]),
 		shutdown: make(chan struct{}),
 	}, nil
 }
 
-func (b *Bot[T]) getOrCreateSession(ctx context.Context, user *tgbotapi.User, chat *tgbotapi.Chat) (*botSession[T], error) {
-	if chat == nil {
-		return nil, fmt.Errorf("chat is nil, cannot create session")
-	}
-	if user == nil {
-		return nil, fmt.Errorf("user is nil, cannot create session")
-	}
+func (b *Bot[T]) getOrCreateSession(ctx context.Context, userId UserId, chatId ChatId) (*session[T], error) {
 	b.mSessions.Lock()
 	defer b.mSessions.Unlock()
 
-	session := b.sessions[chat.ID]
+	session := b.sessions[chatId]
 	if session == nil {
-		session = NewSession(user.ID, chat.ID, b.sessionContextFactory(user.ID, chat.ID), b, ctx, b.botApi)
-		b.sessions[chat.ID] = session
+		session = NewSession(userId, chatId, b.config.AppStateManager.CreateAppState(userId, chatId), b, ctx, b.botApi)
+		b.sessions[chatId] = session
 
 		// create an initial state and activate
 		session.getOrPushCurrentState()
 		session.CurrentState().Activate(session)
 
-	}
-
-	if session.chat == nil {
-		session.chat = chat
-	}
-
-	if session.user == nil {
-		session.user = user
 	}
 
 	return session, nil
@@ -162,7 +163,7 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 				}
 			}
 
-			session, err := b.getOrCreateSession(ctx, user, upd.FromChat())
+			session, err := b.getOrCreateSession(ctx, UserId(user.ID), ChatId(upd.FromChat().ID))
 			if err != nil {
 				log.Printf("error handling update %#v: %v", upd, err)
 				continue
@@ -200,6 +201,10 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 	}
 }
 
+func (b *Bot[T]) rootState() State[T] {
+	return b.config.RootState()
+}
+
 func (b *Bot[T]) foreachSessionAsync(do func(session Session[T])) {
 	for _, session := range b.sessions {
 		session := session
@@ -228,11 +233,11 @@ func (b *Bot[T]) storeSessions(ctx context.Context) {
 	b.mSessions.Lock()
 	defer b.mSessions.Unlock()
 	for _, session := range b.sessions {
-		err := b.config.SessionContextManager.StoreSession(StoredSession[T]{
-			UserID:         session.userId,
-			ChatID:         session.chatId,
-			LastAction:     time.Now(),
-			SessionContext: session.sessionContext,
+		err := b.config.AppStateManager.StoreSessionState(StoredSessionState[T]{
+			UserID:     UserId(session.userId),
+			ChatID:     ChatId(session.chatId),
+			LastAction: time.Now(),
+			State:      session.appState,
 		})
 		if err != nil {
 			log.Printf("error storing session for user %d: %v", session.userId, err)
@@ -244,7 +249,7 @@ func (b *Bot[T]) loadSessions(ctx context.Context) error {
 	b.mSessions.Lock()
 	defer b.mSessions.Unlock()
 
-	sessions, err := b.config.SessionContextManager.LoadSessions()
+	sessions, err := b.config.AppStateManager.LoadSessionStates()
 	if err != nil {
 		return fmt.Errorf("error loading sessions: %v", err)
 	}
@@ -256,7 +261,7 @@ func (b *Bot[T]) loadSessions(ctx context.Context) error {
 			continue
 		}
 
-		bs := NewSession(session.UserID, session.ChatID, session.SessionContext, b, ctx, b.botApi)
+		bs := NewSession(UserId(session.UserID), ChatId(session.ChatID), session.State, b, ctx, b.botApi)
 		b.sessions[session.ChatID] = bs
 
 		// if the user was active in the last 30 days, we'll tell them that the bot is back by activating the current state

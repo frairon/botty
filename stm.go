@@ -7,9 +7,16 @@ import (
 type (
 	Button         string
 	ButtonRow      []Button
-	ButtonKeyboard []ButtonRow
+	buttonKeyboard []ButtonRow
 )
 
+type Keyboard interface {
+	Buttons() []ButtonRow
+}
+
+func (bk buttonKeyboard) Buttons() []ButtonRow {
+	return bk
+}
 func (c Button) Is(val string) bool {
 	return string(c) == val
 }
@@ -31,9 +38,11 @@ type State[T any] interface {
 	BeforeLeave(bs Session[T])
 }
 
-func NewButtonKeyboard(rows ...ButtonRow) ButtonKeyboard {
-	return ButtonKeyboard(rows)
+func NewButtonKeyboard(rows ...ButtonRow) Keyboard {
+	return buttonKeyboard(rows)
 }
+
+var NoButtons buttonKeyboard = nil
 
 func newConditionalRow(condition func() bool, row ButtonRow) ButtonRow {
 	if condition() {
@@ -179,4 +188,26 @@ func (fs *functionState[T]) BeforeLeave(bs Session[T]) {
 	if fs.beforeLeaveHandler != nil {
 		fs.beforeLeaveHandler(bs)
 	}
+}
+
+type StateBuilder[T any] struct {
+	fs *functionState[T]
+}
+
+func NewStateBuilder[T any]() *StateBuilder[T] {
+	return &StateBuilder[T]{
+		fs: &functionState[T]{
+			activate: func(bs Session[T]) {
+				bs.SendMessage("I am a state")
+			},
+		},
+	}
+}
+
+func (sb *StateBuilder[T]) OnActivate(activator func(bs Session[T])) *StateBuilder[T] {
+	sb.fs.activate = activator
+	return sb
+}
+func (sb *StateBuilder[T]) Build() State[T] {
+	return sb.fs
 }
