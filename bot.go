@@ -143,12 +143,17 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 				return nil
 			}
 
+			// an update-ID < 0 cannot happen, but it's used by the mock to achieve
+			// synchronous behavior. We will drop it here.
+			if upd.UpdateID < 0 {
+				continue
+			}
+
 			user := upd.SentFrom()
 			if user == nil {
 				log.Printf("no sending user - dropping update: %v", upd)
 				continue
 			}
-
 			if !b.config.UserManager.UserExists(user.ID) {
 				if !b.acceptNewUser {
 					log.Printf("user not allowed: %v", user.ID)

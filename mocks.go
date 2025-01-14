@@ -2,6 +2,7 @@ package botty
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -101,8 +102,30 @@ func (mb *MockBot[T]) LastMessageButtons() []string {
 	return buttons
 }
 
+func (mb *MockBot[T]) Send(userId UserId, text string) {
+	mb.api.updates <- tgbotapi.Update{
+		Message: &tgbotapi.Message{
+			From: &tgbotapi.User{ID: int64(userId)},
+			Chat: &tgbotapi.Chat{ID: int64(userId)},
+			Text: text,
+		},
+	}
+	// send noop update to synchronize the caller
+	mb.api.updates <- tgbotapi.Update{
+		UpdateID: -1,
+	}
+}
+
 func (m *mockApi[T]) Request(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error) {
-	// log.Printf("Request: %#v", c)
+	switch value := c.(type) {
+
+	// ignored
+	case tgbotapi.SetMyCommandsConfig:
+	default:
+		_ = value
+
+		log.Printf("Trying to request something unknown: %T (%v)", c, c)
+	}
 	return nil, nil
 }
 func (m *mockApi[T]) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
@@ -110,6 +133,9 @@ func (m *mockApi[T]) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 	switch value := c.(type) {
 	case (tgbotapi.MessageConfig):
 		m.mock.LastMessage = value
+
+	default:
+		log.Printf("Trying to send something unknown: %T", c)
 	}
 	m.mock.NumMsgSent++
 	return tgbotapi.Message{}, nil

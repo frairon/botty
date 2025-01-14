@@ -30,7 +30,7 @@ type StateFactory[T any] func() State[T]
 type State[T any] interface {
 	Activate(bs Session[T])
 	Return(bs Session[T])
-	HandleMessage(bs Session[T], message *tgbotapi.Message) bool
+	HandleMessage(bs Session[T], msg ChatMessage) bool
 	HandleCommand(bs Session[T], command string, args ...string) bool
 	HandleCallbackQuery(bs Session[T], query *tgbotapi.CallbackQuery) bool
 
@@ -144,7 +144,7 @@ func (d *DynamicKeyboard[T]) Handle(bs Session[T], button Button) bool {
 type functionState[T any] struct {
 	activate             func(bs Session[T])
 	returner             func(bs Session[T])
-	handleMessage        func(bs Session[T], message *tgbotapi.Message)
+	handleMessage        func(bs Session[T], message ChatMessage)
 	commandHandler       func(bs Session[T], command string, args ...string) bool
 	callbackQueryHandler func(bs Session[T], query *tgbotapi.CallbackQuery) bool
 	beforeLeaveHandler   func(bs Session[T])
@@ -162,7 +162,7 @@ func (fs *functionState[T]) Return(bs Session[T]) {
 	}
 }
 
-func (fs *functionState[T]) HandleMessage(bs Session[T], message *tgbotapi.Message) bool {
+func (fs *functionState[T]) HandleMessage(bs Session[T], message ChatMessage) bool {
 	if fs.handleMessage == nil {
 		return false
 	}
@@ -208,6 +208,12 @@ func (sb *StateBuilder[T]) OnActivate(activator func(bs Session[T])) *StateBuild
 	sb.fs.activate = activator
 	return sb
 }
+
+func (sb *StateBuilder[T]) OnMessage(handleMessage func(bs Session[T], message ChatMessage)) *StateBuilder[T] {
+	sb.fs.handleMessage = handleMessage
+	return sb
+}
+
 func (sb *StateBuilder[T]) Build() State[T] {
 	return sb.fs
 }

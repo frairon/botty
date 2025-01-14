@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type promptOptions struct {
@@ -47,8 +45,8 @@ func PromptState[T any](yesHandler func(), options ...PromptOption) State[T] {
 			bs.SendMessage(opts.message, SendMessageWithKeyboard(NewButtonKeyboard(newRow(Yes, Cancel))))
 		},
 
-		handleMessage: func(bs Session[T], message *tgbotapi.Message) {
-			switch Button(message.Text) {
+		handleMessage: func(bs Session[T], message ChatMessage) {
+			switch Button(message.Text()) {
 			case Cancel:
 				bs.SendMessage("Aborted.")
 				bs.DropStates(opts.dropStates)
@@ -66,8 +64,8 @@ func SelectState[O, T any](text string, items []O, accept func(bs Session[T], it
 			bs.SendMessage(text)
 			bs.SendMessage(fmt.Sprintf("Please enter index (0-%d)", len(items)-1))
 		},
-		handleMessage: func(bs Session[T], msg *tgbotapi.Message) {
-			selector := strings.TrimSpace(msg.Text)
+		handleMessage: func(bs Session[T], msg ChatMessage) {
+			selector := strings.TrimSpace(msg.Text())
 
 			idx, err := strconv.ParseInt(selector, 10, 32)
 			if err != nil || idx < 0 || int(idx) >= len(items) {

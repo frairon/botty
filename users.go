@@ -42,14 +42,14 @@ func UsersList[T any](uStorage UserManager) State[T] {
 				SendMessageWithKeyboard(NewButtonKeyboard(newRow(Back),
 					newRow(Add, Delete))))
 		},
-		handleMessage: func(bs Session[T], message *tgbotapi.Message) {
+		handleMessage: func(bs Session[T], message ChatMessage) {
 			botName, err := bs.BotName()
 			if err != nil {
 				bs.Fail("Cannot find bot identity", "error getting bot name: %v", err)
 				return
 			}
 
-			switch Button(message.Text) {
+			switch Button(message.Text()) {
 			case Back:
 				bs.PopState()
 			case Add:
@@ -70,8 +70,8 @@ func SelectToDeleteUser[T any](uStorage UserManager, users []User) State[T] {
 		activate: func(bs Session[T]) {
 			bs.SendMessage("Select user to delete", SendMessageWithKeyboard(NewButtonKeyboard(newRow(Back))))
 		},
-		handleMessage: func(bs Session[T], msg *tgbotapi.Message) {
-			selector := strings.TrimSpace(msg.Text)
+		handleMessage: func(bs Session[T], msg ChatMessage) {
+			selector := strings.TrimSpace(msg.Text())
 
 			idx, err := strconv.ParseInt(selector, 10, 32)
 			if err != nil || idx < 0 || int(idx) >= len(users) {

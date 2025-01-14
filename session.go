@@ -127,7 +127,7 @@ func (bs *session[T]) Handle(update tgbotapi.Update) bool {
 			return bs.handleCommand(cmd, args)
 		}
 
-		return curState.HandleMessage(bs, update.Message)
+		return curState.HandleMessage(bs, &tgMessage{m: update.Message})
 	case update.CallbackQuery != nil:
 
 		if curState.HandleCallbackQuery(bs, update.CallbackQuery) {
