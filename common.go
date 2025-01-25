@@ -2,6 +2,7 @@ package botty
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 )
@@ -42,7 +43,7 @@ func PromptState[T any](yesHandler func(), options ...PromptOption) State[T] {
 
 	return &functionState[T]{
 		activate: func(bs Session[T]) {
-			bs.SendMessage(opts.message, SendMessageWithKeyboard(NewButtonKeyboard(newRow(Yes, Cancel))))
+			bs.SendMessage(opts.message, SendMessageWithKeyboard(NewButtonKeyboard(NewRow(Yes, Cancel))))
 		},
 
 		handleMessage: func(bs Session[T], message ChatMessage) {
@@ -86,85 +87,87 @@ func TernaryButton(cond bool, trueButton, falseButton InlineButton) InlineButton
 	return falseButton
 }
 
-// func NewMultiMessageHandler[T any](handlers ...InlineMessageHandler[T]) State[T] {
-// 	handlersByMsg := map[int]InlineMessageHandler[T]{}
+func NewMultiMessageHandler[T any](handlers ...InlineMessageHandler[T]) State[T] {
+	handlersByMsg := map[int]InlineMessageHandler[T]{}
 
-// 	fs := &functionState[T]{
-// 		activate: func(bs Session[T]) {
-// 			for _, handler := range handlers {
-// 				msg, keyboard, err := handler(bs, "")
-// 				if err != nil {
-// 					bs.SendError(err)
-// 					return
-// 				}
-// 				msg := bs.SendMessage(msg, SendMessageInlineKeyboard(keyboard))
-// 				handlersByMsg[msgId] = handler
-// 			}
-// 		},
-// 		callbackQueryHandler: func(bs Session[T], query *tgbotapi.CallbackQuery) bool {
-// 			handler := handlersByMsg[query.Message.MessageID]
+	return NewStateBuilder[T]().
+		OnActivate(func(bs Session[T]) {
+			for _, handler := range handlers {
+				msg, keyboard, err := handler(bs, "")
+				if err != nil {
+					bs.SendError(err)
+					return
+				}
+				msgId := bs.SendMessage(msg, SendMessageInlineKeyboard(keyboard)).ID()
+				handlersByMsg[msgId] = handler
+			}
+		}).
+		OnCallbackQuery(func(bs Session[T], query CallbackQuery) bool {
+			handler := handlersByMsg[int(query.MessageID())]
 
-// 			if handler == nil {
-// 				log.Printf("did not find handler for message")
-// 				return false
-// 			}
-// 			content, keyboard, err := handler(bs, query.Data)
-// 			if err != nil {
-// 				bs.SendError(err)
-// 				return true
-// 			}
-// 			if content != "" && keyboard != nil {
-// 				bs.UpdateMessageForCallback(query.ID,
-// 					query.Message.MessageID,
-// 					content,
-// 					SendMessageInlineKeyboard(keyboard),
-// 				)
-// 			}
-// 			return true
-// 		},
-// 		beforeLeaveHandler: func(bs Session[T]) {
-// 			for msgId := range handlersByMsg {
-// 				bs.RemoveKeyboardForMessage(msgId)
-// 			}
-// 		},
-// 	}
-// 	return fs
-// }
-// type InlineMessageHandler[T any] func(bs Session[T], query string) (string, InlineKeyboard, error)
+			if handler == nil {
+				log.Printf("did not find handler for message")
+				return false
+			}
+			content, keyboard, err := handler(bs, query.Data())
+			if err != nil {
+				bs.SendError(err)
+				return true
+			}
+			if content != "" && keyboard != nil {
+				bs.UpdateMessageForCallback(query.ID(),
+					query.MessageID(),
+					content,
+					SendMessageInlineKeyboard(keyboard),
+				)
+			}
+			return true
+		}).
+		OnBeforeLeave(func(bs Session[T]) {
 
-// func NewMessageHandler[T any](handleQuery InlineMessageHandler[T]) State[T] {
-// 	var lastMessageId int
+			// bug hier, die map wird nie geleert, d.h. es werden immer mehr message-ids akkumuliert.
+			for msgId := range handlersByMsg {
+				bs.RemoveKeyboardForMessage(MessageId(msgId))
+				delete(handlersByMsg, msgId)
+			}
+		}).Build()
+}
 
-// 	fs := &functionState[T]{
-// 		activate: func(bs Session[T]) {
-// 			msg, keyboard, err := handleQuery(bs, "")
-// 			if err != nil {
-// 				bs.SendError(err)
-// 				return
-// 			}
-// 			lastMessageId = bs.SendMessage(msg, SendMessageInlineKeyboard(keyboard))
-// 		},
-// 		callbackQueryHandler: func(bs Session[T], query *tgbotapi.CallbackQuery) bool {
-// 			log.Printf("callback: %#v", query)
-// 			content, keyboard, err := handleQuery(bs, query.Data)
-// 			if err != nil {
-// 				bs.SendError(err)
-// 				return true
-// 			}
-// 			if content != "" && keyboard != nil {
-// 				bs.UpdateMessageForCallback(query.ID,
-// 					query.Message.MessageID,
-// 					content,
-// 					SendMessageInlineKeyboard(keyboard),
-// 				)
-// 			}
-// 			return true
-// 		},
-// 		beforeLeaveHandler: func(bs Session[T]) {
-// 			if lastMessageId != 0 {
-// 				bs.RemoveKeyboardForMessage(lastMessageId)
-// 			}
-// 		},
-// 	}
-// 	return fs
-// }
+func NewMessageHandler[T any](handleQuery InlineMessageHandler[T]) State[T] {
+	var lastMessageId int
+
+	return NewStateBuilder[T]().
+		OnActivate(func(bs Session[T]) {
+			msg, keyboard, err := handleQuery(bs, "")
+			if err != nil {
+				bs.SendError(err)
+				return
+			}
+			lastMessageId = bs.SendMessage(msg, SendMessageInlineKeyboard(keyboard)).ID()
+		}).
+		OnCallbackQuery(func(bs Session[T], query CallbackQuery) bool {
+			log.Printf("callback: %#v", query)
+			content, keyboard, err := handleQuery(bs, query.Data())
+			if err != nil {
+				bs.SendError(err)
+				return true
+			}
+			if content != "" && keyboard != nil {
+				bs.UpdateMessageForCallback(query.ID(),
+					query.MessageID(),
+					content,
+					SendMessageInlineKeyboard(keyboard),
+				)
+			}
+			return true
+		}).
+		OnBeforeLeave(func(bs Session[T]) {
+			if lastMessageId != 0 {
+				bs.RemoveKeyboardForMessage(MessageId(lastMessageId))
+			}
+		}).
+		Build()
+
+}
+
+type InlineMessageHandler[T any] func(bs Session[T], query string) (string, InlineKeyboard, error)

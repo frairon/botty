@@ -13,3 +13,27 @@ type tgMessage struct {
 func (m *tgMessage) Text() string {
 	return m.m.Text
 }
+
+type CallbackQuery interface {
+	Data() string
+	ID() string
+	MessageID() MessageId
+}
+
+type tgCbQuery struct {
+	m *tgbotapi.CallbackQuery
+}
+
+func (m *tgCbQuery) Data() string {
+	return m.m.Data
+}
+func (m *tgCbQuery) ID() string {
+	return m.m.ID
+}
+func (m *tgCbQuery) MessageID() MessageId {
+	if m.m.Message != nil {
+		return MessageId(m.m.Message.MessageID)
+	}
+	return 0
+
+}

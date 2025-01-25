@@ -8,7 +8,7 @@ import (
 )
 
 type User struct {
-	ID   int64
+	ID   UserId
 	Name string
 }
 
@@ -21,9 +21,9 @@ type StoredSessionState[T any] struct {
 
 type UserManager interface {
 	ListUsers() ([]User, error)
-	AddUser(userID int64, userName string) error
-	UserExists(userID int64) bool
-	DeleteUser(int64) error
+	AddUser(userID UserId, userName string) error
+	UserExists(userID UserId) bool
+	DeleteUser(userID UserId) error
 }
 
 type AppStateManager[T any] interface {

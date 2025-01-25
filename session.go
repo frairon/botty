@@ -17,6 +17,7 @@ type GlobalMessageHandler[T any] func(bs Session[T], message *tgbotapi.Message) 
 type Message interface {
 	UpdateMessage(queryId string, text string, opts ...SendMessageOption)
 	RemoveKeyboardForMessage()
+	ID() int
 }
 
 type message struct {
@@ -29,12 +30,16 @@ func (m *message) UpdateMessage(queryId string, text string, opts ...SendMessage
 func (m *message) RemoveKeyboardForMessage() {
 }
 
+func (m *message) ID() int {
+	return m.messageId
+}
+
 type Session[T any] interface {
 	SendMessage(text string, opts ...SendMessageOption) Message
+	SendTemplateMessage(template string, values KeyValues, opts ...SendMessageOption) Message
+	UpdateMessageForCallback(queryId string, messageId MessageId, text string, opts ...SendMessageOption)
 
 	Fail(message string, formatErrorMsg string, args ...interface{})
-
-	SendTemplateMessage(template string, values KeyValues, opts ...SendMessageOption) Message
 
 	RootState() State[T]
 	PushState(state State[T])
@@ -43,6 +48,7 @@ type Session[T any] interface {
 	ResetToState(state State[T])
 	DropStates(n int)
 	SendError(err error)
+	CurrentState() State[T]
 
 	RemoveKeyboardForMessage(messageId MessageId)
 
@@ -53,7 +59,11 @@ type Session[T any] interface {
 
 	BotName() (string, error)
 
+	Context() context.Context
+
 	State() T
+
+	LastUserAction() time.Time
 }
 
 type session[T any] struct {
@@ -93,6 +103,10 @@ func (bs *session[T]) State() T {
 	return bs.appState
 }
 
+func (bs *session[T]) Context() context.Context {
+	return bs.botCtx
+}
+
 func (bs *session[T]) getOrPushCurrentState() State[T] {
 	if len(bs.stateStack) == 0 {
 		bs.stateStack = []State[T]{bs.bot.rootState()}
@@ -107,6 +121,10 @@ func (bs *session[T]) RootState() State[T] {
 
 func (bs *session[T]) AcceptUsers(duration time.Duration) {
 	bs.bot.AcceptUsers(duration)
+}
+
+func (bs *session[T]) LastUserAction() time.Time {
+	return bs.lastUserAction
 }
 
 func (bs *session[T]) Handle(update tgbotapi.Update) bool {
@@ -130,7 +148,7 @@ func (bs *session[T]) Handle(update tgbotapi.Update) bool {
 		return curState.HandleMessage(bs, &tgMessage{m: update.Message})
 	case update.CallbackQuery != nil:
 
-		if curState.HandleCallbackQuery(bs, update.CallbackQuery) {
+		if curState.HandleCallbackQuery(bs, &tgCbQuery{m: update.CallbackQuery}) {
 			return true
 		} else {
 			return bs.removeExpiredCallback(update.CallbackQuery)

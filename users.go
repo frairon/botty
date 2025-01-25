@@ -19,8 +19,8 @@ func UsersList[T any](uStorage UserManager) State[T] {
 
 	var users []User
 
-	return &functionState[T]{
-		activate: func(bs Session[T]) {
+	return NewStateBuilder[T]().
+		OnActivate(func(bs Session[T]) {
 			var err error
 			users, err = uStorage.ListUsers()
 			if err != nil {
@@ -39,10 +39,10 @@ func UsersList[T any](uStorage UserManager) State[T] {
 {{- end -}}`
 
 			bs.SendTemplateMessage(template, TplValues(KV("users", users)),
-				SendMessageWithKeyboard(NewButtonKeyboard(newRow(Back),
-					newRow(Add, Delete))))
-		},
-		handleMessage: func(bs Session[T], message ChatMessage) {
+				SendMessageWithKeyboard(NewButtonKeyboard(NewRow(Back),
+					NewRow(Add, Delete))))
+		}).
+		OnMessage(func(bs Session[T], message ChatMessage) {
 			botName, err := bs.BotName()
 			if err != nil {
 				bs.Fail("Cannot find bot identity", "error getting bot name: %v", err)
@@ -60,15 +60,15 @@ Tell you friend to contact bot @{{.botName}} now.`, TplValues(KV("botName", botN
 			case Delete:
 				bs.PushState(SelectToDeleteUser[T](uStorage, users))
 			}
-		},
-	}
+		}).
+		Build()
 }
 
 func SelectToDeleteUser[T any](uStorage UserManager, users []User) State[T] {
 	var Back Button = "Back"
 	return &functionState[T]{
 		activate: func(bs Session[T]) {
-			bs.SendMessage("Select user to delete", SendMessageWithKeyboard(NewButtonKeyboard(newRow(Back))))
+			bs.SendMessage("Select user to delete", SendMessageWithKeyboard(NewButtonKeyboard(NewRow(Back))))
 		},
 		handleMessage: func(bs Session[T], msg ChatMessage) {
 			selector := strings.TrimSpace(msg.Text())

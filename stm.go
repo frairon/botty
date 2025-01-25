@@ -1,9 +1,5 @@
 package botty
 
-import (
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-)
-
 type (
 	Button         string
 	ButtonRow      []Button
@@ -32,7 +28,7 @@ type State[T any] interface {
 	Return(bs Session[T])
 	HandleMessage(bs Session[T], msg ChatMessage) bool
 	HandleCommand(bs Session[T], command string, args ...string) bool
-	HandleCallbackQuery(bs Session[T], query *tgbotapi.CallbackQuery) bool
+	HandleCallbackQuery(bs Session[T], query CallbackQuery) bool
 
 	// called before leaving the state (either by pushing another state on top of it or popping it)
 	BeforeLeave(bs Session[T])
@@ -44,18 +40,18 @@ func NewButtonKeyboard(rows ...ButtonRow) Keyboard {
 
 var NoButtons buttonKeyboard = nil
 
-func newConditionalRow(condition func() bool, row ButtonRow) ButtonRow {
+func NewConditionalRow(condition func() bool, row ButtonRow) ButtonRow {
 	if condition() {
 		return row
 	}
 	return nil
 }
 
-func newRow(commands ...Button) ButtonRow {
+func NewRow(commands ...Button) ButtonRow {
 	return ButtonRow(commands)
 }
 
-func conditionalButton(condition func() bool, trueButton, falseButton Button) Button {
+func ConditionalButton(condition func() bool, trueButton, falseButton Button) Button {
 	if condition() {
 		return trueButton
 	}
@@ -114,12 +110,12 @@ func NewDynamicKeyboard[T any]() *DynamicKeyboard[T] {
 func (d *DynamicKeyboard[T]) AddButton(label string, handler func(bs Session[T]), startRowAfter int) {
 	d.handlers[Button(label)] = handler
 	if len(d.rows) == 0 {
-		d.rows = append(d.rows, newRow(Button(label)))
+		d.rows = append(d.rows, NewRow(Button(label)))
 	} else {
 		last := d.rows[len(d.rows)-1]
 
 		if startRowAfter > 0 && len(last) >= startRowAfter {
-			d.rows = append(d.rows, newRow(Button(label)))
+			d.rows = append(d.rows, NewRow(Button(label)))
 		} else {
 			last = append(last, Button(label))
 			d.rows[len(d.rows)-1] = last
@@ -141,12 +137,19 @@ func (d *DynamicKeyboard[T]) Handle(bs Session[T], button Button) bool {
 	return false
 }
 
+func (d *DynamicKeyboard[T]) Rows() []ButtonRow {
+	// TODO: make a copy
+	return d.rows
+}
+
 type functionState[T any] struct {
 	activate             func(bs Session[T])
 	returner             func(bs Session[T])
 	handleMessage        func(bs Session[T], message ChatMessage)
+	buttonHandler        map[Button]func(bs Session[T], message ChatMessage)
 	commandHandler       func(bs Session[T], command string, args ...string) bool
-	callbackQueryHandler func(bs Session[T], query *tgbotapi.CallbackQuery) bool
+	callbackQueryHandler func(bs Session[T], query CallbackQuery) bool
+	queryDataHandler     map[string]func(bs Session[T], query CallbackQuery) bool
 	beforeLeaveHandler   func(bs Session[T])
 }
 
@@ -166,6 +169,12 @@ func (fs *functionState[T]) HandleMessage(bs Session[T], message ChatMessage) bo
 	if fs.handleMessage == nil {
 		return false
 	}
+
+	if buttonHandler, ok := fs.buttonHandler[Button(message.Text())]; ok {
+		buttonHandler(bs, message)
+		return true
+	}
+
 	fs.handleMessage(bs, message)
 	return true
 }
@@ -177,7 +186,10 @@ func (fs *functionState[T]) HandleCommand(bs Session[T], command string, args ..
 	return false
 }
 
-func (fs *functionState[T]) HandleCallbackQuery(bs Session[T], query *tgbotapi.CallbackQuery) bool {
+func (fs *functionState[T]) HandleCallbackQuery(bs Session[T], query CallbackQuery) bool {
+	if handler, ok := fs.queryDataHandler[query.Data()]; ok {
+		return handler(bs, query)
+	}
 	if fs.callbackQueryHandler != nil {
 		return fs.callbackQueryHandler(bs, query)
 	}
@@ -197,9 +209,8 @@ type StateBuilder[T any] struct {
 func NewStateBuilder[T any]() *StateBuilder[T] {
 	return &StateBuilder[T]{
 		fs: &functionState[T]{
-			activate: func(bs Session[T]) {
-				bs.SendMessage("I am a state")
-			},
+			buttonHandler:    make(map[Button]func(bs Session[T], message ChatMessage)),
+			queryDataHandler: make(map[string]func(bs Session[T], query CallbackQuery) bool),
 		},
 	}
 }
@@ -214,6 +225,32 @@ func (sb *StateBuilder[T]) OnMessage(handleMessage func(bs Session[T], message C
 	return sb
 }
 
+func (sb *StateBuilder[T]) OnButton(button Button, handler func(bs Session[T], message ChatMessage)) *StateBuilder[T] {
+	sb.fs.buttonHandler[button] = handler
+	// TODO handle the button in the handler
+	return sb
+}
+
+func (sb *StateBuilder[T]) OnBeforeLeave(handler func(bs Session[T])) *StateBuilder[T] {
+	// TODO	implement
+	return sb
+}
+
+func (sb *StateBuilder[T]) OnCallbackQuery(handler func(bs Session[T], query CallbackQuery) bool) *StateBuilder[T] {
+	sb.fs.callbackQueryHandler = handler
+	return sb
+}
+
+func (sb *StateBuilder[T]) OnInlineButton(button InlineButton, handler func(bs Session[T], query CallbackQuery) bool) *StateBuilder[T] {
+	sb.fs.queryDataHandler[button.Data] = handler
+	return sb
+}
+
 func (sb *StateBuilder[T]) Build() State[T] {
+	if sb.fs.activate == nil {
+		sb.fs.activate = func(bs Session[T]) {
+			bs.SendMessage("Default State")
+		}
+	}
 	return sb.fs
 }

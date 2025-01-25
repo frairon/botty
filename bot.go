@@ -129,7 +129,12 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 		for _, session := range b.sessions {
 			session.Shutdown()
 		}
-		b.broadcastToActive("Bot is restarting for maintenance. See you in a few minutes. 🧘")
+		b.ForeachSessionAsync(func(session Session[T]) {
+			if session.LastUserAction().IsZero() {
+				return
+			}
+			session.SendMessage("Bot is restarting for maintenance. See you in a few minutes. 🧘")
+		})
 		b.storeSessions(ctx)
 	}()
 
@@ -154,7 +159,7 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 				log.Printf("no sending user - dropping update: %v", upd)
 				continue
 			}
-			if !b.config.UserManager.UserExists(user.ID) {
+			if !b.config.UserManager.UserExists(UserId(user.ID)) {
 				if !b.acceptNewUser {
 					log.Printf("user not allowed: %v", user.ID)
 					continue
@@ -162,7 +167,7 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 
 				name := findNameForUser(user)
 				log.Printf("Adding new user with %d (%s)", user.ID, name)
-				if err := b.config.UserManager.AddUser(user.ID, name); err != nil {
+				if err := b.config.UserManager.AddUser(UserId(user.ID), name); err != nil {
 					log.Printf("Error adding user: %#v: %v", user, err)
 					continue
 				}
@@ -210,7 +215,7 @@ func (b *Bot[T]) rootState() State[T] {
 	return b.config.RootState()
 }
 
-func (b *Bot[T]) foreachSessionAsync(do func(session Session[T])) {
+func (b *Bot[T]) ForeachSessionAsync(do func(session Session[T])) {
 	for _, session := range b.sessions {
 		session := session
 		go func() {
@@ -281,62 +286,4 @@ func (b *Bot[T]) loadSessions(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (b *Bot[T]) broadcastToActive(message string) {
-	b.mSessions.Lock()
-	defer b.mSessions.Unlock()
-
-	for _, session := range b.sessions {
-		if session.lastUserAction.IsZero() {
-			continue
-		}
-		session.SendMessage(message, SendMessageKeepKeyboard())
-	}
-}
-
-type BroadcastOptions[T any] struct {
-	message  string
-	newState StateFactory[T]
-}
-type BroadcastOption[T any] func(opts *BroadcastOptions[T])
-
-func BroadcastNewState[T any](stateBuilder StateFactory[T]) BroadcastOption[T] {
-	return func(opts *BroadcastOptions[T]) {
-		opts.newState = stateBuilder
-	}
-}
-
-func BroadcastMessage[T any](message string) BroadcastOption[T] {
-	return func(opts *BroadcastOptions[T]) {
-		opts.message = message
-	}
-}
-
-func BroadcastMessagef[T any](format string, args ...interface{}) BroadcastOption[T] {
-	return BroadcastMessage[T](fmt.Sprintf(format, args...))
-}
-
-func (b *Bot[T]) broadcast(opts ...BroadcastOption[T]) {
-	b.mSessions.Lock()
-	defer b.mSessions.Unlock()
-
-	for _, session := range b.sessions {
-		var options BroadcastOptions[T]
-
-		for _, opt := range opts {
-			opt(&options)
-		}
-
-		session := session
-		go func() {
-			if options.message != "" {
-				session.SendMessage(options.message, SendMessageKeepKeyboard())
-			}
-			if options.newState != nil {
-				session.ResetToState(options.newState())
-			}
-		}()
-
-	}
 }
