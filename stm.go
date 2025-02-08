@@ -3,6 +3,7 @@ package botty
 type (
 	Button         string
 	ButtonRow      []Button
+	ButtonRows     []ButtonRow
 	buttonKeyboard []ButtonRow
 )
 
@@ -24,14 +25,17 @@ func (c Button) S() string {
 type StateFactory[T any] func() State[T]
 
 type State[T any] interface {
-	Activate(bs Session[T])
+	Enter(bs Session[T])
+	// called before leaving the state (either by pushing another state on top of it or popping it)
+	Leave(bs Session[T])
+
+	// called before returning to this state by popping the "next" state.
+	// If there is no specific return function defined, will call Enter again.
 	Return(bs Session[T])
+
 	HandleMessage(bs Session[T], msg ChatMessage) bool
 	HandleCommand(bs Session[T], command string, args ...string) bool
 	HandleCallbackQuery(bs Session[T], query CallbackQuery) bool
-
-	// called before leaving the state (either by pushing another state on top of it or popping it)
-	BeforeLeave(bs Session[T])
 }
 
 func NewButtonKeyboard(rows ...ButtonRow) Keyboard {
@@ -143,40 +147,50 @@ func (d *DynamicKeyboard[T]) Rows() []ButtonRow {
 }
 
 type functionState[T any] struct {
-	activate             func(bs Session[T])
-	returner             func(bs Session[T])
-	handleMessage        func(bs Session[T], message ChatMessage)
-	buttonHandler        map[Button]func(bs Session[T], message ChatMessage)
-	commandHandler       func(bs Session[T], command string, args ...string) bool
+	onEnter  func(bs Session[T])
+	onReturn func(bs Session[T])
+	onLeave  func(bs Session[T])
+
+	// handlers by button
+	buttonHandler map[Button]func(bs Session[T], message ChatMessage)
+
+	// generic handle message
+	handleMessage func(bs Session[T], message ChatMessage)
+
+	// handle commands
+	commandHandler func(bs Session[T], command string, args ...string) bool
+
+	// handlin callback queries
 	callbackQueryHandler func(bs Session[T], query CallbackQuery) bool
-	queryDataHandler     map[string]func(bs Session[T], query CallbackQuery) bool
-	beforeLeaveHandler   func(bs Session[T])
+
+	// handling query data
+	queryDataHandler map[string]func(bs Session[T], query CallbackQuery) bool
 }
 
-func (fs *functionState[T]) Activate(bs Session[T]) {
-	fs.activate(bs)
+func (fs *functionState[T]) Enter(bs Session[T]) {
+	fs.onEnter(bs)
 }
 
 func (fs *functionState[T]) Return(bs Session[T]) {
-	if fs.returner != nil {
-		fs.returner(bs)
+	if fs.onReturn != nil {
+		fs.onReturn(bs)
 	} else {
-		fs.activate(bs)
+		fs.onEnter(bs)
 	}
 }
 
 func (fs *functionState[T]) HandleMessage(bs Session[T], message ChatMessage) bool {
-	if fs.handleMessage == nil {
-		return false
-	}
 
 	if buttonHandler, ok := fs.buttonHandler[Button(message.Text())]; ok {
 		buttonHandler(bs, message)
 		return true
 	}
 
-	fs.handleMessage(bs, message)
-	return true
+	if fs.handleMessage != nil {
+		fs.handleMessage(bs, message)
+		return true
+	}
+	return false
 }
 
 func (fs *functionState[T]) HandleCommand(bs Session[T], command string, args ...string) bool {
@@ -196,9 +210,9 @@ func (fs *functionState[T]) HandleCallbackQuery(bs Session[T], query CallbackQue
 	return false
 }
 
-func (fs *functionState[T]) BeforeLeave(bs Session[T]) {
-	if fs.beforeLeaveHandler != nil {
-		fs.beforeLeaveHandler(bs)
+func (fs *functionState[T]) Leave(bs Session[T]) {
+	if fs.onLeave != nil {
+		fs.onLeave(bs)
 	}
 }
 
@@ -215,8 +229,8 @@ func NewStateBuilder[T any]() *StateBuilder[T] {
 	}
 }
 
-func (sb *StateBuilder[T]) OnActivate(activator func(bs Session[T])) *StateBuilder[T] {
-	sb.fs.activate = activator
+func (sb *StateBuilder[T]) OnEnter(onEnter func(bs Session[T])) *StateBuilder[T] {
+	sb.fs.onEnter = onEnter
 	return sb
 }
 
@@ -227,11 +241,16 @@ func (sb *StateBuilder[T]) OnMessage(handleMessage func(bs Session[T], message C
 
 func (sb *StateBuilder[T]) OnButton(button Button, handler func(bs Session[T], message ChatMessage)) *StateBuilder[T] {
 	sb.fs.buttonHandler[button] = handler
-	// TODO handle the button in the handler
+	return sb
+}
+func (sb *StateBuilder[T]) OnButtonHandler(bhs ...ButtonHandler[T]) *StateBuilder[T] {
+	for _, bh := range bhs {
+		sb.fs.buttonHandler[Button(bh.Button())] = bh.Handle
+	}
 	return sb
 }
 
-func (sb *StateBuilder[T]) OnBeforeLeave(handler func(bs Session[T])) *StateBuilder[T] {
+func (sb *StateBuilder[T]) OnLeave(handler func(bs Session[T])) *StateBuilder[T] {
 	// TODO	implement
 	return sb
 }
@@ -247,8 +266,8 @@ func (sb *StateBuilder[T]) OnInlineButton(button InlineButton, handler func(bs S
 }
 
 func (sb *StateBuilder[T]) Build() State[T] {
-	if sb.fs.activate == nil {
-		sb.fs.activate = func(bs Session[T]) {
+	if sb.fs.onEnter == nil {
+		sb.fs.onEnter = func(bs Session[T]) {
 			bs.SendMessage("Default State")
 		}
 	}

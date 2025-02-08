@@ -38,6 +38,7 @@ func TplValues(values ...KeyValue) KeyValues {
 	// return kv
 }
 func RunTemplate(tpl string, values ...KeyValue) (string, error) {
+	tpl = strings.TrimSpace(tpl)
 	valueMap := make(map[string]interface{}, len(values))
 
 	for _, value := range values {
@@ -48,7 +49,7 @@ func RunTemplate(tpl string, values ...KeyValue) (string, error) {
 
 func RunTemplateMap(tpl string, valueMap map[string]any) (string, error) {
 
-	content := template.Must(template.New("").Funcs(templateFuncs).Parse(tpl))
+	content := template.Must(template.New("").Funcs(templateFuncs).Funcs(userTemplateFuncs).Parse(tpl))
 
 	var buf bytes.Buffer
 	err := content.Execute(&buf, valueMap)
@@ -64,6 +65,13 @@ var templateFuncs = template.FuncMap{
 	"formatOnOff":          formatOnOff,
 	"formatTimeHourMinute": formatTimeHourMinute,
 	"divider":              func() string { return "========" },
+}
+
+var userTemplateFuncs = template.FuncMap{}
+
+// Registers a template function to be used in all calls to RunTemplate to render a message for the bot.
+func RegisterGlobalTemplateFunc(name string, anyFunc any) {
+	userTemplateFuncs[name] = anyFunc
 }
 
 type kv struct {

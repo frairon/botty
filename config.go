@@ -45,6 +45,8 @@ type Config[T any] struct {
 	UserManager UserManager
 
 	Connect func(token string) (TGApi, error)
+
+	ErrorHandler func(Session[T], error)
 }
 
 func NewConfig[T any](token string, appStateManager AppStateManager[T], userManager UserManager, rootState StateFactory[T]) *Config[T] {
@@ -60,6 +62,10 @@ func NewConfig[T any](token string, appStateManager AppStateManager[T], userMana
 				return nil, fmt.Errorf("error connecting to bot api: %w", err)
 			}
 			return api, err
+		},
+		ErrorHandler: func(s Session[T], err error) {
+			s.SendMessage("Operation could not be executed due to an internal error. Check the logs.")
+			s.PopState()
 		},
 	}
 }

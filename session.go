@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -15,29 +16,70 @@ type GlobalMessageHandler[T any] func(bs Session[T], message *tgbotapi.Message) 
 // remove that type. It indicates we could use it outside of a session but we shouldn't. Instead
 // the context should have an updater-interface that modifies a messsage and the message-id becomes its own (int)-type
 type Message interface {
-	UpdateMessage(queryId string, text string, opts ...SendMessageOption)
-	RemoveKeyboardForMessage()
-	ID() int
+	Update(text string)
+	UpdateTemplate(template string, values KeyValues)
+
+	ID() MessageId
+	Text() string
 }
 
-type message struct {
-	messageId int // use this in the state
+type message[T any] struct {
+	messageId MessageId // use this in the state
 	// if we add a bot-session, do not marshal that to state but inject when unmarshalling
+
+	text string
+	bot  *Bot[T]
+
+	session Session[T]
 }
 
-func (m *message) UpdateMessage(queryId string, text string, opts ...SendMessageOption) {
+func (m *message[T]) Text() string {
+	return m.text
 }
-func (m *message) RemoveKeyboardForMessage() {
+func (m *message[T]) UpdateTemplate(template string, values KeyValues) {
+	value, err := RunTemplate(template, values...)
+	if err != nil {
+		m.session.SendError(err)
+		return
+	}
+	m.Update(value)
+}
+func (m *message[T]) Update(text string) {
+	edit := tgbotapi.EditMessageTextConfig{
+		BaseEdit: tgbotapi.BaseEdit{
+			ChatID:    int64(m.session.ChatId()),
+			MessageID: int(m.messageId),
+		},
+		Text:      text,
+		ParseMode: "html",
+	}
+
+	resp, err := m.bot.botApi.Request(edit)
+
+	if err != nil {
+		m.bot.handleError(m.session, fmt.Errorf("error updating message: %v, response: %#v", err, resp))
+	}
+}
+func (m *message[T]) RemoveKeyboardForMessage() {
+	m.bot.botApi.Request(tgbotapi.EditMessageReplyMarkupConfig{
+		BaseEdit: tgbotapi.BaseEdit{
+			ChatID:      int64(m.session.ChatId()),
+			MessageID:   int(m.messageId),
+			ReplyMarkup: nil,
+		},
+	})
 }
 
-func (m *message) ID() int {
+func (m *message[T]) ID() MessageId {
 	return m.messageId
 }
 
 type Session[T any] interface {
 	SendMessage(text string, opts ...SendMessageOption) Message
 	SendTemplateMessage(template string, values KeyValues, opts ...SendMessageOption) Message
-	UpdateMessageForCallback(queryId string, messageId MessageId, text string, opts ...SendMessageOption)
+
+	updateMessage(messageId MessageId, text string, opts ...SendMessageOption) Message
+	updateInlineMessage(queryId string, messageId MessageId, text string, opts ...SendMessageOption) Message
 
 	Fail(message string, formatErrorMsg string, args ...interface{})
 
@@ -48,12 +90,20 @@ type Session[T any] interface {
 	ResetToState(state State[T])
 	DropStates(n int)
 	SendError(err error)
+	SendErrorf(format string, args ...interface{})
 	CurrentState() State[T]
+
+	SendInlineMessage(text string, handler func(bs Session[T], message InlineMessage[T], query string) bool, opts ...SendMessageOption) InlineMessage[T]
+
+	// re-enters the current state.
+	Reenter()
 
 	RemoveKeyboardForMessage(messageId MessageId)
 
 	// returns the current user ID
 	UserId() UserId
+
+	ChatId() ChatId
 
 	AcceptUsers(duration time.Duration)
 
@@ -79,7 +129,9 @@ type session[T any] struct {
 
 	lastUserAction time.Time
 
-	stateStack []State[T]
+	mMessages             sync.Mutex
+	currentInlineMessages map[MessageId]InlineMessage[T]
+	stateStack            []State[T]
 
 	botCtx context.Context
 
@@ -95,6 +147,7 @@ func NewSession[T any](userId UserId, chatId ChatId, appState T, bot *Bot[T], bo
 		bot:                    bot,
 		sessionCommandHandlers: make(map[string]CommandHandler[T]),
 		appState:               appState,
+		currentInlineMessages:  map[MessageId]InlineMessage[T]{},
 	}
 
 }
@@ -127,6 +180,34 @@ func (bs *session[T]) LastUserAction() time.Time {
 	return bs.lastUserAction
 }
 
+func (bs *session[T]) Reenter() {
+	bs.CurrentState().Enter(bs)
+}
+
+func (bs *session[T]) SendInlineMessage(text string, handler func(bs Session[T], message InlineMessage[T], query string) bool, opts ...SendMessageOption) InlineMessage[T] {
+
+	// send the initial message
+	msg := bs.SendMessage(text, opts...)
+	log.Printf("inline-message: sending message-id: %v", msg.ID())
+	// create an inline message
+	inMsg := &inlineMessage[T]{
+		message: &message[T]{
+			text:      msg.Text(),
+			messageId: msg.ID(),
+			session:   bs,
+			bot:       bs.bot,
+		},
+	}
+	inMsg.handler = handler
+
+	// add handler to current stack's inline message handler
+	bs.mMessages.Lock()
+	defer bs.mMessages.Unlock()
+	bs.currentInlineMessages[msg.ID()] = inMsg
+
+	return inMsg
+}
+
 func (bs *session[T]) Handle(update tgbotapi.Update) bool {
 	curState := bs.getOrPushCurrentState()
 
@@ -136,7 +217,7 @@ func (bs *session[T]) Handle(update tgbotapi.Update) bool {
 	case update.Message != nil:
 
 		// if the message is a command, try to handle that instead.
-		// First the current stae, then the context
+		// First the current state, then the context
 		if cmd := update.Message.CommandWithAt(); cmd != "" {
 			args := strings.Split(update.Message.CommandArguments(), " ")
 			if curState.HandleCommand(bs, cmd, args...) {
@@ -150,10 +231,22 @@ func (bs *session[T]) Handle(update tgbotapi.Update) bool {
 
 		if curState.HandleCallbackQuery(bs, &tgCbQuery{m: update.CallbackQuery}) {
 			return true
-		} else {
-			return bs.removeExpiredCallback(update.CallbackQuery)
+		}
+		bs.mMessages.Lock()
+		log.Printf("message-id in callback-query: %v", update.CallbackQuery.Message.MessageID)
+		handler, has := bs.currentInlineMessages[MessageId(update.CallbackQuery.Message.MessageID)]
+		bs.mMessages.Unlock()
+
+		if has && handler != nil {
+			// try to handle
+			if handler.handleQuery(update.CallbackQuery.Data) {
+				// confirm response
+				bs.botApi.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, ""))
+				return true
+			}
 		}
 
+		return bs.removeExpiredCallback(update.CallbackQuery)
 	default:
 		log.Printf("unhandled update: %#v", update)
 	}
@@ -207,12 +300,25 @@ func (bs *session[T]) SetCommandHandler(name string, handler CommandHandler[T]) 
 	bs.sessionCommandHandlers[name] = handler
 }
 
+func (bs *session[T]) removeCurrentInlineMessages() {
+	bs.mMessages.Lock()
+	defer bs.mMessages.Unlock()
+	for _, m := range bs.currentInlineMessages {
+		m.RemoveKeyboard()
+	}
+
+	// reset inline messages
+	bs.currentInlineMessages = map[MessageId]InlineMessage[T]{}
+}
+
 func (bs *session[T]) PushState(state State[T]) {
 	if len(bs.stateStack) > 0 {
-		bs.CurrentState().BeforeLeave(bs)
+		bs.CurrentState().Leave(bs)
 	}
+
+	bs.removeCurrentInlineMessages()
 	bs.stateStack = append(bs.stateStack, state)
-	state.Activate(bs)
+	state.Enter(bs)
 }
 
 func (bs *session[T]) PopState() {
@@ -220,7 +326,9 @@ func (bs *session[T]) PopState() {
 		return
 	}
 
-	bs.CurrentState().BeforeLeave(bs)
+	bs.CurrentState().Leave(bs)
+
+	bs.removeCurrentInlineMessages()
 
 	bs.stateStack = bs.stateStack[:len(bs.stateStack)-1]
 
@@ -251,7 +359,7 @@ func (bs *session[T]) ReplaceState(state State[T]) {
 	}
 
 	bs.stateStack[len(bs.stateStack)-1] = state
-	state.Activate(bs)
+	state.Enter(bs)
 }
 
 func (bs *session[T]) ResetToState(state State[T]) {
@@ -268,7 +376,6 @@ func (bs *session[T]) ChatId() ChatId {
 }
 
 func (bs *session[T]) SendTemplateMessage(template string, values KeyValues, opts ...SendMessageOption) Message {
-	template = strings.TrimSpace(template)
 	value, err := RunTemplate(template, values...)
 	if err != nil {
 		bs.SendError(err)
@@ -325,14 +432,16 @@ func (bs *session[T]) SendMessage(text string, opts ...SendMessageOption) Messag
 	if err != nil {
 		log.Printf("Error sending message %#v: %v", msg, err)
 	}
-	return &message{messageId: sentMsg.MessageID}
+
+	return &message[T]{messageId: MessageId(sentMsg.MessageID), text: sentMsg.Text, bot: bs.bot, session: bs}
 }
 
 func (bs *session[T]) SendError(err error) {
-	_, sendErr := bs.botApi.Send(tgbotapi.NewMessage(int64(bs.ChatId()), fmt.Sprintf("error: %v", err)))
-	if sendErr != nil {
-		log.Printf("Error sending error: %v", sendErr)
-	}
+	bs.bot.handleError(bs, err)
+}
+
+func (bs *session[T]) SendErrorf(format string, args ...interface{}) {
+	bs.SendError(fmt.Errorf(format, args...))
 }
 
 type (
@@ -362,13 +471,26 @@ func SendMessageWithNotification() SendMessageOption {
 		opts.notification = true
 	}
 }
+
 func SendMessageWithKeyboard(keyboard Keyboard) SendMessageOption {
 	return func(opts *sendMessageOptions) {
 		opts.keyboard = keyboard
 	}
 }
 
-func (bs *session[T]) UpdateMessageForCallback(queryId string, messageId MessageId, text string, opts ...SendMessageOption) {
+func (bs *session[T]) updateTemplateMessage(messageId MessageId, template string, values KeyValues, opts ...SendMessageOption) Message {
+	value, err := RunTemplate(template, values...)
+	if err != nil {
+		bs.SendError(err)
+	}
+
+	return bs.updateMessage(messageId, value, opts...)
+}
+func (bs *session[T]) updateMessage(messageId MessageId, text string, opts ...SendMessageOption) Message {
+
+	if messageId == 0 {
+		return bs.SendMessage(text, opts...)
+	}
 	edit := tgbotapi.EditMessageTextConfig{
 		BaseEdit: tgbotapi.BaseEdit{
 			ChatID:    int64(bs.chatId),
@@ -378,6 +500,8 @@ func (bs *session[T]) UpdateMessageForCallback(queryId string, messageId Message
 		ParseMode: "html",
 	}
 
+	log.Printf("edit: %#v", edit)
+
 	options := &sendMessageOptions{}
 	for _, opt := range opts {
 		opt(options)
@@ -386,19 +510,20 @@ func (bs *session[T]) UpdateMessageForCallback(queryId string, messageId Message
 	if len(options.inlineKeyboard) > 0 {
 		edit.BaseEdit.ReplyMarkup = convertToMarkup(options.inlineKeyboard)
 	}
-
-	_, err := bs.botApi.Request(edit)
+	resp, err := bs.botApi.Request(edit)
 	if err != nil {
-		log.Printf("error updating message: %v", err)
+		log.Printf("error updating message: %v, response: %#v", err, resp)
 	}
-	bs.botApi.Request(tgbotapi.NewCallback(queryId, ""))
+
+	return &message[T]{messageId: messageId, text: text}
 }
 
-func (bs *session[T]) c(err error) {
-	_, sendErr := bs.botApi.Send(tgbotapi.NewMessage(int64(bs.ChatId()), fmt.Sprintf("error: %v", err)))
-	if sendErr != nil {
-		log.Printf("Error sending error: %v", sendErr)
-	}
+func (bs *session[T]) updateInlineMessage(queryId string, messageId MessageId, text string, opts ...SendMessageOption) Message {
+	msg := bs.updateMessage(messageId, text, opts...)
+
+	bs.botApi.Request(tgbotapi.NewCallback(queryId, ""))
+
+	return msg
 }
 
 func (bs *session[T]) Fail(message string, formatErrorMsg string, args ...interface{}) {
@@ -417,10 +542,13 @@ func (bs *session[T]) BotName() (string, error) {
 
 func (bs *session[T]) Shutdown() {
 	for i := len(bs.stateStack) - 1; i >= 0; i-- {
-		bs.stateStack[i].BeforeLeave(bs)
+		bs.stateStack[i].Leave(bs)
 	}
+	// remove inline messages
+	bs.removeCurrentInlineMessages()
 }
 
+// TODO remove
 func convertToMarkup(keyboard InlineKeyboard) *tgbotapi.InlineKeyboardMarkup {
 	markup := tgbotapi.NewInlineKeyboardMarkup()
 	for _, row := range keyboard {

@@ -38,6 +38,8 @@ type Bot[T any] struct {
 
 	// will be closed when bot is shutting down
 	shutdown chan struct{}
+
+	errors chan error
 }
 
 func New[T any](config *Config[T]) (*Bot[T], error) {
@@ -56,6 +58,7 @@ func New[T any](config *Config[T]) (*Bot[T], error) {
 		botApi:   botApi,
 		sessions: make(map[ChatId]*session[T]),
 		shutdown: make(chan struct{}),
+		errors:   make(chan error, 100),
 	}, nil
 }
 
@@ -70,7 +73,7 @@ func (b *Bot[T]) getOrCreateSession(ctx context.Context, userId UserId, chatId C
 
 		// create an initial state and activate
 		session.getOrPushCurrentState()
-		session.CurrentState().Activate(session)
+		session.CurrentState().Enter(session)
 
 	}
 
@@ -122,7 +125,9 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 		log.Printf("error setting my commands")
 	}
 
-	b.loadSessions(ctx)
+	if err := b.loadSessions(ctx); err != nil {
+		log.Printf("error loading user sessions: %v", err)
+	}
 
 	// broadcast shutdown message and store everything
 	defer func() {
@@ -133,7 +138,7 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 			if session.LastUserAction().IsZero() {
 				return
 			}
-			session.SendMessage("Bot is restarting for maintenance. See you in a few minutes. 🧘")
+			session.SendMessage("Bot is restarting for maintenance. See you around. 🧘")
 		})
 		b.storeSessions(ctx)
 	}()
@@ -211,6 +216,10 @@ func (b *Bot[T]) Run(ctx context.Context) error {
 	}
 }
 
+func (b *Bot[T]) handleError(session Session[T], err error) {
+	b.config.ErrorHandler(session, err)
+}
+
 func (b *Bot[T]) rootState() State[T] {
 	return b.config.RootState()
 }
@@ -276,7 +285,7 @@ func (b *Bot[T]) loadSessions(ctx context.Context) error {
 
 		// if the user was active in the last 30 days, we'll tell them that the bot is back by activating the current state
 		if !session.LastAction.IsZero() && time.Since(session.LastAction) < time.Hour*24*30 {
-			bs.getOrPushCurrentState().Activate(bs)
+			bs.getOrPushCurrentState().Enter(bs)
 		} else {
 			// initialize to root state
 			// TODO: this needs to be some kind of 'init' function instead

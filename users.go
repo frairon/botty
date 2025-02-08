@@ -20,7 +20,7 @@ func UsersList[T any](uStorage UserManager) State[T] {
 	var users []User
 
 	return NewStateBuilder[T]().
-		OnActivate(func(bs Session[T]) {
+		OnEnter(func(bs Session[T]) {
 			var err error
 			users, err = uStorage.ListUsers()
 			if err != nil {
@@ -67,7 +67,7 @@ Tell you friend to contact bot @{{.botName}} now.`, TplValues(KV("botName", botN
 func SelectToDeleteUser[T any](uStorage UserManager, users []User) State[T] {
 	var Back Button = "Back"
 	return &functionState[T]{
-		activate: func(bs Session[T]) {
+		onEnter: func(bs Session[T]) {
 			bs.SendMessage("Select user to delete", SendMessageWithKeyboard(NewButtonKeyboard(NewRow(Back))))
 		},
 		handleMessage: func(bs Session[T], msg ChatMessage) {
