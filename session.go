@@ -56,6 +56,9 @@ func (m *message[T]) Update(text string) {
 
 	resp, err := m.bot.botApi.Request(edit)
 
+	// update internal text
+	m.text = text
+
 	if err != nil {
 		m.bot.handleError(m.session, fmt.Errorf("error updating message: %v, response: %#v", err, resp))
 	}

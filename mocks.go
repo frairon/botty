@@ -50,10 +50,11 @@ func NewMockBot[T any](cfg *Config[T]) (*MockBot[T], error) {
 	}
 
 	go func() {
-		mockBot.err.Lock()
-		defer mockBot.err.Unlock()
 		defer close(mockBot.done)
-		mockBot.err.err = mockBot.bot.Run(ctx)
+		err := mockBot.bot.Run(ctx)
+		mockBot.err.Lock()
+		mockBot.err.err = err
+		mockBot.err.Unlock()
 	}()
 	return mockBot, nil
 }

@@ -42,11 +42,11 @@ func UsersList[T any](uStorage UserManager) State[T] {
 				SendMessageWithKeyboard(NewButtonKeyboard(NewRow(Back),
 					NewRow(Add, Delete))))
 		}).
-		OnMessage(func(bs Session[T], message ChatMessage) {
+		AddMessageHandler(func(bs Session[T], message ChatMessage) bool {
 			botName, err := bs.BotName()
 			if err != nil {
 				bs.Fail("Cannot find bot identity", "error getting bot name: %v", err)
-				return
+				return true
 			}
 
 			switch Button(message.Text()) {
@@ -59,7 +59,10 @@ Tell you friend to contact bot @{{.botName}} now.`, TplValues(KV("botName", botN
 				bs.AcceptUsers(10 * time.Minute)
 			case Delete:
 				bs.PushState(SelectToDeleteUser[T](uStorage, users))
+			default:
+				return false
 			}
+			return true
 		}).
 		Build()
 }

@@ -5,42 +5,54 @@ type ButtonHandler[T any] interface {
 	Handle(Session[T], ChatMessage)
 }
 
-type KeyboardBuilder[T any] interface {
-	NextRow() KeyboardBuilder[T]
-	AddButton(button Button, handler func(Session[T], ChatMessage)) KeyboardBuilder[T]
-	AutoLayout(cols int) KeyboardBuilder[T]
+type KeyHandler[T any] interface {
+	NextRow() KeyHandler[T]
+	AddButton(button Button, handler func(Session[T], ChatMessage)) KeyHandler[T]
+	AutoLayout(cols int) KeyHandler[T]
+	Reset()
+
+	// returns the keyboard to be attached to a message
 	Keyboard() Keyboard
+
+	handle(bs Session[T], msg ChatMessage) bool
+
+	// returns all current button handlers.
 	ButtonHandlers() []ButtonHandler[T]
 }
 
-type keyboardBuilder[T any] struct {
+type keyHandler[T any] struct {
 	rows     []ButtonRow
 	handlers map[string]func(Session[T], ChatMessage)
 }
 
 // Creates a new keyboard
-func MakeKeyboard[T any]() KeyboardBuilder[T] {
-	return &keyboardBuilder[T]{
+func NewKeyHandler[T any]() KeyHandler[T] {
+	return &keyHandler[T]{
 		handlers: map[string]func(Session[T], ChatMessage){},
 	}
 }
 
 // Breaks the current button-row and adds a next row, which
 // following calls to AddButton will be added to
-func (mb *keyboardBuilder[T]) NextRow() KeyboardBuilder[T] {
+func (mb *keyHandler[T]) NextRow() KeyHandler[T] {
 	if len(mb.rows) == 0 || len(mb.rows[len(mb.rows)-1]) == 0 {
 		mb.rows = append(mb.rows, []Button{})
 	}
 	return mb
 }
 
+func (mb *keyHandler[T]) Reset() {
+	mb.rows = nil
+	mb.handlers = map[string]func(Session[T], ChatMessage){}
+}
+
 // Adds a new button
-func (mb *keyboardBuilder[T]) AddButton(button Button, handler func(Session[T], ChatMessage)) KeyboardBuilder[T] {
+func (mb *keyHandler[T]) AddButton(button Button, handler func(Session[T], ChatMessage)) KeyHandler[T] {
 	mb.handlers[string(button)] = handler
 
 	if len(mb.rows) == 0 {
 		// no rows exist, create one with the passed button
-		mb.rows = []ButtonRow{ButtonRow{button}}
+		mb.rows = []ButtonRow{{button}}
 	} else {
 		// append to last row
 		mb.rows[len(mb.rows)-1] = append(mb.rows[len(mb.rows)-1], button)
@@ -51,7 +63,7 @@ func (mb *keyboardBuilder[T]) AddButton(button Button, handler func(Session[T], 
 // Creates a coloumn layout by breaking the buttons into rows according to the passed number
 // of columns.
 // If previously NextRow() was used, this will be ignored
-func (mb *keyboardBuilder[T]) AutoLayout(cols int) KeyboardBuilder[T] {
+func (mb *keyHandler[T]) AutoLayout(cols int) KeyHandler[T] {
 	var newRows []ButtonRow
 
 	if cols <= 0 {
@@ -70,8 +82,16 @@ func (mb *keyboardBuilder[T]) AutoLayout(cols int) KeyboardBuilder[T] {
 	return mb
 }
 
-func (mb *keyboardBuilder[T]) Keyboard() Keyboard {
+func (mb *keyHandler[T]) Keyboard() Keyboard {
 	return NewButtonKeyboard(mb.rows...)
+}
+
+func (mb *keyHandler[T]) handle(bs Session[T], msg ChatMessage) bool {
+	if handler, ok := mb.handlers[msg.Text()]; ok {
+		handler(bs, msg)
+		return true
+	}
+	return false
 }
 
 func NewButtonHandler[T any](button Button, handler func(Session[T], ChatMessage)) ButtonHandler[T] {
@@ -93,7 +113,7 @@ func (bh *buttonHandler[T]) Handle(s Session[T], msg ChatMessage) {
 	bh.handler(s, msg)
 }
 
-func (mb *keyboardBuilder[T]) ButtonHandlers() []ButtonHandler[T] {
+func (mb *keyHandler[T]) ButtonHandlers() []ButtonHandler[T] {
 	h := make([]ButtonHandler[T], 0, len(mb.handlers))
 	for button, handler := range mb.handlers {
 		h = append(h, &buttonHandler[T]{

@@ -1,5 +1,7 @@
 package botty
 
+import "fmt"
+
 type (
 	Button         string
 	ButtonRow      []Button
@@ -9,6 +11,10 @@ type (
 
 type Keyboard interface {
 	Buttons() []ButtonRow
+}
+
+func Buttonf(format string, args ...interface{}) Button {
+	return Button(fmt.Sprintf(format, args...))
 }
 
 func (bk buttonKeyboard) Buttons() []ButtonRow {
@@ -151,9 +157,6 @@ type functionState[T any] struct {
 	onReturn func(bs Session[T])
 	onLeave  func(bs Session[T])
 
-	// handlers by button
-	buttonHandler map[Button]func(bs Session[T], message ChatMessage)
-
 	// generic handle message
 	handleMessage func(bs Session[T], message ChatMessage)
 
@@ -180,11 +183,6 @@ func (fs *functionState[T]) Return(bs Session[T]) {
 }
 
 func (fs *functionState[T]) HandleMessage(bs Session[T], message ChatMessage) bool {
-
-	if buttonHandler, ok := fs.buttonHandler[Button(message.Text())]; ok {
-		buttonHandler(bs, message)
-		return true
-	}
 
 	if fs.handleMessage != nil {
 		fs.handleMessage(bs, message)
@@ -217,15 +215,20 @@ func (fs *functionState[T]) Leave(bs Session[T]) {
 }
 
 type StateBuilder[T any] struct {
+	// handlers by button
+	buttonHandler map[Button]func(bs Session[T], message ChatMessage)
+
+	keyHandlers []func(bs Session[T], message ChatMessage) bool
+
 	fs *functionState[T]
 }
 
 func NewStateBuilder[T any]() *StateBuilder[T] {
 	return &StateBuilder[T]{
 		fs: &functionState[T]{
-			buttonHandler:    make(map[Button]func(bs Session[T], message ChatMessage)),
 			queryDataHandler: make(map[string]func(bs Session[T], query CallbackQuery) bool),
 		},
+		buttonHandler: make(map[Button]func(bs Session[T], message ChatMessage)),
 	}
 }
 
@@ -234,24 +237,29 @@ func (sb *StateBuilder[T]) OnEnter(onEnter func(bs Session[T])) *StateBuilder[T]
 	return sb
 }
 
-func (sb *StateBuilder[T]) OnMessage(handleMessage func(bs Session[T], message ChatMessage)) *StateBuilder[T] {
-	sb.fs.handleMessage = handleMessage
+func (sb *StateBuilder[T]) AddMessageHandler(handleMessage func(bs Session[T], message ChatMessage) bool) *StateBuilder[T] {
+	sb.keyHandlers = append(sb.keyHandlers, handleMessage)
 	return sb
 }
 
 func (sb *StateBuilder[T]) OnButton(button Button, handler func(bs Session[T], message ChatMessage)) *StateBuilder[T] {
-	sb.fs.buttonHandler[button] = handler
+	sb.buttonHandler[button] = handler
 	return sb
 }
 func (sb *StateBuilder[T]) OnButtonHandler(bhs ...ButtonHandler[T]) *StateBuilder[T] {
 	for _, bh := range bhs {
-		sb.fs.buttonHandler[Button(bh.Button())] = bh.Handle
+		sb.buttonHandler[Button(bh.Button())] = bh.Handle
 	}
 	return sb
 }
 
 func (sb *StateBuilder[T]) OnLeave(handler func(bs Session[T])) *StateBuilder[T] {
-	// TODO	implement
+	sb.fs.onLeave = handler
+	return sb
+}
+
+func (sb *StateBuilder[T]) AddKeyHandler(keyHandler KeyHandler[T]) *StateBuilder[T] {
+	sb.keyHandlers = append(sb.keyHandlers, keyHandler.handle)
 	return sb
 }
 
@@ -266,6 +274,22 @@ func (sb *StateBuilder[T]) OnInlineButton(button InlineButton, handler func(bs S
 }
 
 func (sb *StateBuilder[T]) Build() State[T] {
+
+	sb.fs.handleMessage = func(bs Session[T], message ChatMessage) {
+
+		// try to handle with button handler
+		if buttonHandler, ok := sb.buttonHandler[Button(message.Text())]; ok {
+			buttonHandler(bs, message)
+			return
+		}
+
+		// try all message handlers, if one of them will handle it
+		for _, msgHandler := range sb.keyHandlers {
+			if msgHandler(bs, message) {
+				return
+			}
+		}
+	}
 	if sb.fs.onEnter == nil {
 		sb.fs.onEnter = func(bs Session[T]) {
 			bs.SendMessage("Default State")
