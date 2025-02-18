@@ -20,6 +20,66 @@ type KeyHandler[T any] interface {
 	ButtonHandlers() []ButtonHandler[T]
 }
 
+type InlineKeyboard2[T any] struct {
+	rows     []InlineRow
+	handlers map[string]func(Session[T], InlineMessage[T]) bool
+}
+
+func NewInlineKeyboard2[T any]() *InlineKeyboard2[T] {
+	return &InlineKeyboard2[T]{
+		handlers: map[string]func(Session[T], InlineMessage[T]) bool{},
+	}
+}
+
+func (ik *InlineKeyboard2[T]) NextRow() *InlineKeyboard2[T] {
+	if len(ik.rows) == 0 || len(ik.rows[len(ik.rows)-1]) == 0 {
+		ik.rows = append(ik.rows, []InlineButton{})
+	}
+	return ik
+}
+func (ik *InlineKeyboard2[T]) AddButton(label string, handler func(Session[T], InlineMessage[T]) bool) *InlineKeyboard2[T] {
+	data := label
+	ik.handlers[data] = handler
+
+	if len(ik.rows) == 0 {
+		// no rows exist, create one with the passed button
+		ik.rows = []InlineRow{NewInlineRow(NewInlineButton(label, data))}
+	} else {
+		// append to last row
+		ik.rows[len(ik.rows)-1] = append(ik.rows[len(ik.rows)-1], NewInlineButton(label, data))
+	}
+	return ik
+}
+func (ik *InlineKeyboard2[T]) AutoLayout(cols int) *InlineKeyboard2[T] {
+	var newRows []InlineRow
+
+	if cols <= 0 {
+		panic("cannot layout with zero columns")
+	}
+
+	for _, r := range ik.rows {
+		for _, b := range r {
+			if len(newRows) == 0 || len(newRows[len(newRows)-1]) >= cols {
+				newRows = append(newRows, nil)
+			}
+			newRows[len(newRows)-1] = append(newRows[len(newRows)-1], b)
+		}
+	}
+	ik.rows = newRows
+	return ik
+}
+func (ik *InlineKeyboard2[T]) Reset() *InlineKeyboard2[T] {
+	ik.rows = nil
+	ik.handlers = map[string]func(Session[T], InlineMessage[T]) bool{}
+	return ik
+}
+func (ik *InlineKeyboard2[T]) handle(bs Session[T], msg InlineMessage[T], data string) bool {
+	if handler, ok := ik.handlers[data]; ok {
+		return handler(bs, msg)
+	}
+	return false
+}
+
 type keyHandler[T any] struct {
 	rows     []ButtonRow
 	handlers map[string]func(Session[T], ChatMessage)

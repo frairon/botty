@@ -1,7 +1,7 @@
 package botty
 
 type InlineMessage[T any] interface {
-	Update(text string, keyboard InlineKeyboard)
+	Update(text string, keyboard *InlineKeyboard2[T])
 	RemoveKeyboard()
 	Text() string
 	ID() MessageId
@@ -10,11 +10,11 @@ type InlineMessage[T any] interface {
 
 type inlineMessage[T any] struct {
 	*message[T]
-	handler func(bs Session[T], msg InlineMessage[T], query string) bool
+	keyboard *InlineKeyboard2[T]
 }
 
-func (im *inlineMessage[T]) Update(text string, keyboard InlineKeyboard) {
-	msg := im.session.updateMessage(im.messageId, text, SendMessageInlineKeyboard(keyboard))
+func (im *inlineMessage[T]) Update(text string, keyboard *InlineKeyboard2[T]) {
+	msg := im.session.updateMessage(im.messageId, text, SendMessageInlineKeyboard(keyboard.rows))
 
 	im.text = msg.Text()
 }
@@ -27,6 +27,6 @@ func (im *inlineMessage[T]) ID() MessageId {
 func (im *inlineMessage[T]) RemoveKeyboard() {
 	im.session.RemoveKeyboardForMessage(im.messageId)
 }
-func (im *inlineMessage[T]) handleQuery(query string) bool {
-	return im.handler(im.session, im, query)
+func (im *inlineMessage[T]) handleQuery(data string) bool {
+	return im.keyboard.handle(im.session, im, data)
 }

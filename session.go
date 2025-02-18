@@ -96,7 +96,8 @@ type Session[T any] interface {
 	SendErrorf(format string, args ...interface{})
 	CurrentState() State[T]
 
-	SendInlineMessage(text string, handler func(bs Session[T], message InlineMessage[T], query string) bool, opts ...SendMessageOption) InlineMessage[T]
+	SendInlineMessage(text string, keyboard *InlineKeyboard2[T], opts ...SendMessageOption) InlineMessage[T]
+	SendInlineTemplateMessage(template string, values KeyValues, keyboard *InlineKeyboard2[T], opts ...SendMessageOption) InlineMessage[T]
 
 	// re-enters the current state.
 	Reenter()
@@ -187,8 +188,20 @@ func (bs *session[T]) Reenter() {
 	bs.CurrentState().Enter(bs)
 }
 
-func (bs *session[T]) SendInlineMessage(text string, handler func(bs Session[T], message InlineMessage[T], query string) bool, opts ...SendMessageOption) InlineMessage[T] {
+func (bs *session[T]) SendInlineTemplateMessage(template string, values KeyValues, keyboard *InlineKeyboard2[T], opts ...SendMessageOption) InlineMessage[T] {
 
+	value, err := RunTemplate(template, values...)
+	if err != nil {
+		bs.SendError(err)
+		return bs.SendInlineMessage("error sending message.", keyboard, opts...)
+	}
+
+	return bs.SendInlineMessage(value, keyboard, opts...)
+}
+
+func (bs *session[T]) SendInlineMessage(text string, keyboard *InlineKeyboard2[T], opts ...SendMessageOption) InlineMessage[T] {
+
+	opts = append(opts, SendMessageInlineKeyboard(keyboard.rows))
 	// send the initial message
 	msg := bs.SendMessage(text, opts...)
 	log.Printf("inline-message: sending message-id: %v", msg.ID())
@@ -200,8 +213,8 @@ func (bs *session[T]) SendInlineMessage(text string, handler func(bs Session[T],
 			session:   bs,
 			bot:       bs.bot,
 		},
+		keyboard: keyboard,
 	}
-	inMsg.handler = handler
 
 	// add handler to current stack's inline message handler
 	bs.mMessages.Lock()
@@ -382,6 +395,7 @@ func (bs *session[T]) SendTemplateMessage(template string, values KeyValues, opt
 	value, err := RunTemplate(template, values...)
 	if err != nil {
 		bs.SendError(err)
+		return bs.SendMessage("error sending message.")
 	}
 	return bs.SendMessage(value, opts...)
 }
@@ -449,8 +463,9 @@ func (bs *session[T]) SendErrorf(format string, args ...interface{}) {
 
 type (
 	sendMessageOptions struct {
-		keyboard       Keyboard
-		keepKeyboard   bool
+		keyboard     Keyboard
+		keepKeyboard bool
+		// deprecated
 		inlineKeyboard InlineKeyboard
 		notification   bool
 	}
@@ -463,6 +478,7 @@ func SendMessageKeepKeyboard() SendMessageOption {
 	}
 }
 
+// deprecated
 func SendMessageInlineKeyboard(keyboard InlineKeyboard) SendMessageOption {
 	return func(opts *sendMessageOptions) {
 		opts.inlineKeyboard = keyboard
