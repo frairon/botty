@@ -99,6 +99,8 @@ type Session[T any] interface {
 	SendInlineMessage(text string, keyboard *InlineKeyboard2[T], opts ...SendMessageOption) InlineMessage[T]
 	SendInlineTemplateMessage(template string, values KeyValues, keyboard *InlineKeyboard2[T], opts ...SendMessageOption) InlineMessage[T]
 
+	SendPhoto(content []byte, name string, caption string) Message
+
 	// re-enters the current state.
 	Reenter()
 
@@ -451,6 +453,19 @@ func (bs *session[T]) SendMessage(text string, opts ...SendMessageOption) Messag
 	}
 
 	return &message[T]{messageId: MessageId(sentMsg.MessageID), text: sentMsg.Text, bot: bs.bot, session: bs}
+}
+
+func (bs *session[T]) SendPhoto(content []byte, name string, caption string) Message {
+	photo := tgbotapi.NewPhoto(int64(bs.ChatId()), tgbotapi.FileBytes{Name: name, Bytes: content})
+	photo.Caption = caption
+	photo.ParseMode = "html"
+	msg, err := bs.botApi.Send(photo)
+	if err != nil {
+		bs.SendError(fmt.Errorf("error sending photo: %w", err))
+		return nil
+	}
+
+	return &message[T]{messageId: MessageId(msg.MessageID), text: msg.Text}
 }
 
 func (bs *session[T]) SendError(err error) {

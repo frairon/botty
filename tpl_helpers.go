@@ -146,6 +146,7 @@ func formatUpdatedRelTime(updTime time.Time) string {
 }
 
 func formatTimeHourMinute(updTime time.Time) string {
+	updTime = updTime.Local()
 	if updTime.IsZero() {
 		return "never"
 	}
